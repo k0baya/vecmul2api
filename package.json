@@ -1,0 +1,23 @@
+{
+  "name": "vecmul-to-api",
+  "version": "0.1.0",
+  "description": "A simple Express.js server to use vecmul as api endpoint",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "moment": "^2.30.1",
+    "uuid": "^10.0.0",
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": "16.x"
+  },
+  "license": "MIT",
+  "keywords": [
+    "node"
+  ]
+}
