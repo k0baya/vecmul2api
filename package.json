@@ -2,6 +2,7 @@
   "name": "vecmul-to-api",
   "version": "0.1.0",
   "description": "A simple Express.js server to use vecmul as api endpoint",
+  "author": "k0baya (https://github.com/k0baya)",
   "main": "app.js",
   "scripts": {
     "start": "node app.js"
@@ -15,6 +16,9 @@
   },
   "engines": {
     "node": "16.x"
+  },
+  "repository": {
+    "url": "https://github.com/k0baya/vecmul2api"
   },
   "license": "MIT",
   "keywords": [
