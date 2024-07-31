@@ -1,9 +1,10 @@
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
-const { v4: uuidv4 } = require('uuid'); // 引入 uuid 库
-const bodyParser = require('body-parser'); // 引入 body-parser 解析请求体
-const moment = require('moment'); // 引入 moment.js 库来处理时间戳
+const axios = require('axios'); // 引入 axios 库来发送 HTTP 请求
+const { v4: uuidv4 } = require('uuid');
+const bodyParser = require('body-parser');
+const moment = require('moment');
 
 const app = express();
 const server = http.createServer(app);
@@ -11,7 +12,6 @@ const server = http.createServer(app);
 const port = process.env.PORT || 3000;
 const wsUrl = 'wss://api.vecmul.com/ws';
 
-let rootMsgId; // 变量存储生成的 UUID
 let responses = {}; // 存储不同 rootMsgId 的响应内容
 let connections = {}; // 存储不同 rootMsgId 的 HTTP 连接
 
@@ -30,72 +30,6 @@ const modelMapping = {
 // 使用 body-parser 中间件解析 JSON 请求体
 app.use(bodyParser.json());
 
-// 创建 WebSocket 客户端连接
-const wsClient = new WebSocket(wsUrl);
-
-wsClient.on('open', function open() {
-  console.log('Connected to WebSocket server');
-});
-
-wsClient.on('message', function incoming(data) {
-  console.log('Received: %s', data);
-  const message = JSON.parse(data);
-
-  if (message.type === "AI_STREAM_MESSAGE" && message.data.role === "assistant") {
-    const rootId = message.rootMsgId;
-    const content = message.data.content;
-
-    if (!responses[rootId]) {
-      responses[rootId] = { content: "", finished: false };
-    }
-
-    responses[rootId].content += content;
-
-    if (connections[rootId] && connections[rootId].streaming) {
-      const streamResponse = {
-        id: connections[rootId].completionId,
-        object: "chat.completion.chunk",
-        created: moment().unix(),
-        model: connections[rootId].model,
-        choices: [{
-          index: 0,
-          delta: { content: content }
-        }]
-      };
-      connections[rootId].res.write(`data: ${JSON.stringify(streamResponse)}\n\n`);
-    }
-
-    if (message.data.finishedReason === "end_turn") {
-      responses[rootId].finished = true;
-
-      if (connections[rootId] && connections[rootId].streaming) {
-        const endStreamResponse = {
-          id: connections[rootId].completionId,
-          object: "chat.completion.chunk",
-          created: moment().unix(),
-          model: connections[rootId].model,
-          choices: [{
-            index: 0,
-            delta: {},
-            finish_reason: "stop"
-          }]
-        };
-        connections[rootId].res.write(`data: ${JSON.stringify(endStreamResponse)}\n\n`);
-        connections[rootId].res.end();
-        delete connections[rootId];
-      }
-    }
-  }
-});
-
-wsClient.on('close', function close() {
-  console.log('Disconnected from WebSocket server');
-});
-
-wsClient.on('error', function error(err) {
-  console.error('WebSocket error:', err);
-});
-
 // 生成 completion id
 function GenerateCompletionId(prefix = "chatcmpl-") {
   const characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -108,11 +42,27 @@ function GenerateCompletionId(prefix = "chatcmpl-") {
   return prefix;
 }
 
+// 获取 accessToken 的函数
+async function getToken(refresh_token) {
+  try {
+    const url = 'https://api.vecmul.com/api/v1/auth/refresh';
+    const headers = {
+      'Cookie': `refresh_token=${refresh_token}`
+    };
+
+    const res = await axios.post(url, {}, { headers });
+    return `Bearer ${res.data.accessToken}` || '';
+  } catch (error) {
+    console.error('Error getting token:', error);
+    return '';
+  }
+}
+
 // 身份验证中间件
 function authMiddleware(req, res, next) {
   const authToken = process.env.AUTH_TOKEN;
 
-  if (authToken) {
+  if (!process.env.LOGIN && authToken) {
     const reqAuthToken = req.headers.authorization;
     if (reqAuthToken && reqAuthToken === `Bearer ${authToken}`) {
       next();
@@ -130,32 +80,26 @@ app.get('/', (req, res) => {
 });
 
 // 处理 POST 请求
-app.post('/v1/chat/completions', authMiddleware, (req, res) => {
-  // 获取请求体中的 messages 和 model 部分
+app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
   const { messages, model, stream } = req.body;
   if (!messages) {
     return res.status(400).send('Bad Request: Missing messages');
   }
 
-  // 根据 model 字段进行映射，默认使用 "GPT-3.5"
   const mappedModel = modelMapping[model] || "GPT-3.5";
-
-  // 生成随机 UUID 并存储在 rootMsgId 变量中
-  rootMsgId = uuidv4();
+  const rootMsgId = uuidv4();
   const completionId = GenerateCompletionId();
-
-  // 构造 WebSocket 消息并发送
   const wsMessage = {
     type: "CHAT",
     spaceName: "Free Space",
     message: {
       isAnonymous: true,
-      rootMsgId: rootMsgId, // 使用生成的 UUID
+      rootMsgId: rootMsgId,
       public: false,
-      model: mappedModel, // 使用映射后的 model
+      model: mappedModel,
       order: 0,
       role: "user",
-      content: JSON.stringify(messages), // 将 messages 部分作为 content
+      content: JSON.stringify(messages),
       fileId: null,
       relatedLinkInfo: null,
       messageType: "MESSAGE",
@@ -164,11 +108,55 @@ app.post('/v1/chat/completions', authMiddleware, (req, res) => {
     }
   };
 
-  if (wsClient.readyState === WebSocket.OPEN) {
+  let wsClient;
+  let accessToken = '';
+  if (process.env.LOGIN) {
+    const authHeader = req.headers.authorization || '';
+    const refreshToken = authHeader.split(' ')[1];
+    accessToken = await getToken(refreshToken);
+    const wsUrlWithToken = `${wsUrl}?token=${accessToken}`;
+    console.log(`Websocket Server: ${wsUrlWithToken} `);
+    wsClient = new WebSocket(wsUrlWithToken);
+  } else {
+    wsClient = new WebSocket(wsUrl);
+  }
+
+  let responseSent = false;
+  let responseTimer;
+
+  function sendResponse(responseData) {
+    if (!responseSent) {
+      res.json(responseData);
+      responseSent = true;
+      wsClient.close();
+      clearTimeout(responseTimer); // 清除超时计时器
+    }
+  }
+
+  function endStream(rootMsgId, completionId, model) {
+    if (connections[rootMsgId]) {
+      const endStreamResponse = {
+        id: completionId,
+        object: "chat.completion.chunk",
+        created: moment().unix(),
+        model: model,
+        choices: [{
+          index: 0,
+          delta: {},
+          finish_reason: "stop"
+        }]
+      };
+      connections[rootMsgId].res.write(`data: ${JSON.stringify(endStreamResponse)}\n\n`);
+      connections[rootMsgId].res.end();
+      delete connections[rootMsgId];
+    }
+  }
+
+  wsClient.on('open', function open() {
+    console.log('Connected to WebSocket server');
     wsClient.send(JSON.stringify(wsMessage));
 
-    // 超时设置
-    const timeout = setTimeout(() => {
+    responseTimer = setTimeout(() => {
       const timeoutResponse = {
         id: completionId,
         model: model,
@@ -189,10 +177,16 @@ app.post('/v1/chat/completions', authMiddleware, (req, res) => {
         }
       };
 
-      res.json(timeoutResponse);
-    }, 10000); // 10秒超时
+      if (stream) {
+        if (connections[rootMsgId]) {
+          connections[rootMsgId].res.write(`data: ${JSON.stringify(timeoutResponse)}\n\n`);
+          endStream(rootMsgId, completionId, model);
+        }
+      } else {
+        sendResponse(timeoutResponse);
+      }
+    }, 10000);
 
-    // 检查是否需要流式返回
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -205,13 +199,11 @@ app.post('/v1/chat/completions', authMiddleware, (req, res) => {
         model: model
       };
 
-      // 保持连接打开
     } else {
-      // 定期检查响应是否已完成
       const checkResponse = setInterval(() => {
         if (responses[rootMsgId] && responses[rootMsgId].finished) {
           clearInterval(checkResponse);
-          clearTimeout(timeout); // 如果响应已完成，清除超时
+          clearTimeout(responseTimer);
 
           const responseData = {
             id: completionId,
@@ -233,14 +225,114 @@ app.post('/v1/chat/completions', authMiddleware, (req, res) => {
             }
           };
 
-          delete responses[rootMsgId]; // 清除已完成的响应数据
-          res.json(responseData);
+          delete responses[rootMsgId];
+          sendResponse(responseData);
         }
       }, 100);
     }
-  } else {
-    res.status(500).send('WebSocket connection is not open');
-  }
+  });
+
+  wsClient.on('message', function incoming(data) {
+    console.log('Received: %s', data);
+    const message = JSON.parse(data);
+
+    if (message.type !== "HELLO" && message.type !== "AI_STREAM_MESSAGE" && message.type !== "NEW_CHAT_CREATED") {
+      if (stream) {
+        if (connections[rootMsgId]) {
+          connections[rootMsgId].res.write(`data: ${JSON.stringify(message)}\n\n`);
+          endStream(rootMsgId, completionId, model);
+        }
+      } else {
+        const messageContent = message.data.message || data;
+        sendResponse({
+          id: completionId,
+          model: model,
+          object: "chat.completion",
+          created: moment().unix(),
+          choices: [{
+            index: 0,
+            message: {
+              role: "assistant",
+              content: typeof messageContent === 'string' ? messageContent : JSON.stringify(messageContent)
+            },
+            finish_reason: "stop"
+          }],
+          usage: {
+            prompt_tokens: null,
+            completion_tokens: null,
+            total_tokens: null
+          }
+        });
+      }
+    } else if (message.type === "AI_STREAM_MESSAGE" && message.data.role === "assistant") {
+      const rootId = message.rootMsgId;
+      const content = message.data.content;
+
+      if (!responses[rootId]) {
+        responses[rootId] = { content: "", finished: false };
+      }
+
+      responses[rootId].content += content;
+
+      if (connections[rootId] && connections[rootId].streaming) {
+        const streamResponse = {
+          id: connections[rootId].completionId,
+          object: "chat.completion.chunk",
+          created: moment().unix(),
+          model: connections[rootId].model,
+          choices: [{
+            index: 0,
+            delta: { content: content }
+          }]
+        };
+        connections[rootId].res.write(`data: ${JSON.stringify(streamResponse)}\n\n`);
+      }
+
+      if (message.data.finishedReason === "stop") {
+        responses[rootId].finished = true;
+
+        if (connections[rootId] && connections[rootId].streaming) {
+          endStream(rootId, connections[rootId].completionId, connections[rootId].model);
+        } else {
+          clearTimeout(responseTimer); // 清除超时计时器
+          const responseData = {
+            id: completionId,
+            model: model,
+            object: "chat.completion",
+            created: moment().unix(),
+            choices: [{
+              index: 0,
+              message: {
+                role: "assistant",
+                content: responses[rootId].content
+              },
+              finish_reason: "stop"
+            }],
+            usage: {
+              prompt_tokens: null,
+              completion_tokens: null,
+              total_tokens: null
+            }
+          };
+          delete responses[rootId];
+          sendResponse(responseData);
+        }
+      }
+    }
+  });
+
+  wsClient.on('close', function close() {
+    console.log('Disconnected from WebSocket server');
+  });
+
+  wsClient.on('error', function error(err) {
+    console.error('WebSocket error:', err);
+    if (!responseSent) {
+      res.status(500).send('Internal Server Error');
+      responseSent = true;
+      clearTimeout(responseTimer); // 清除超时计时器
+    }
+  });
 });
 
 app.use((req, res, next) => {
@@ -251,4 +343,3 @@ app.use((req, res, next) => {
 server.listen(port, () => {
   console.log(`💡 Server is running at http://localhost:${port}`);
 });
-

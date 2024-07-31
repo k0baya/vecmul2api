@@ -1,4 +1,5 @@
 ## Vecmul to API
+
 ## Features
 
 - **Streaming Response**: The API supports streaming response, so you can get the response as soon as it's available.
@@ -15,12 +16,14 @@
 
 3. Edit the `.env` file.
 
-| Key        | Default Value | Compulsory | Notice                                               |
-| ---------- | ------------- | ---------- | ---------------------------------------------------- |
-| PORT       | 3000          | No         | Listening Port                                       |
-| AUTH_TOKEN |               | No         | Authentication secret key for `/v1/chat/completions` |
+| Key        | Default Value | Compulsory | Notice                                                                                                                                         |
+| ---------- | ------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| PORT       | 3000          | No         | Listening Port                                                                                                                                 |
+| AUTH_TOKEN |               | No         | API Key to access `/v1/chat/completions`                                                                                                       |
+| LOGIN      |               | No         | `refreshToken` to Vecmul. If it is set, AUTH_TOKEN will be disabled and you will need to use it as an API Key to access `/v1/chat/completions` |
 
 4. Run the following command:
+
    ```bash
    docker compose up -d
    ```
@@ -35,12 +38,14 @@
 
 1. Edit the `.env` file.
 
-| Key        | Default Value | Compulsory | Notice                                               |
-| ---------- | ------------- | ---------- | ---------------------------------------------------- |
-| PORT       | 3000          | No         | Listening Port                                       |
-| AUTH_TOKEN |               | No         | Authentication secret key for `/v1/chat/completions` |
+| Key        | Default Value | Compulsory | Notice                                                                                                                                         |
+| ---------- | ------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| PORT       | 3000          | No         | Listening Port                                                                                                                                 |
+| AUTH_TOKEN |               | No         | API Key to access `/v1/chat/completions`                                                                                                       |
+| LOGIN      |               | No         | `refreshToken` to Vecmul. If it is set, AUTH_TOKEN will be disabled and you will need to use it as an API Key to access `/v1/chat/completions` |
 
 2. Run the following command:
+
    ```bash
    npm install
    npm run start
